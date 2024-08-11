@@ -1,5 +1,5 @@
 # transfromers version 4.36.2
-# Should work for 'susnato/phi-2', a hf version of microsfot/phi-2, check the detail in Huggingface Hub. 
+# Should work for 'susnato/phi-2', a hf version of microsfot/phi-2, check the detail in Huggingface Hub.
 # Haven't tested it! ! !
 import math
 from typing import Optional, Tuple
@@ -7,8 +7,6 @@ from transformers.cache_utils import Cache
 import torch
 import torch.utils.checkpoint
 from torch import nn
-
-
 
 
 # Copied from transformers.models.llama.modeling_llama.rotate_half
@@ -47,7 +45,10 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids, unsqueeze_dim=1):
     k_embed = (k * cos) + (rotate_half(k) * sin) if k is not None else None
     return q_embed, k_embed
 
-def apply_group_rotary_pos_emb(q, k, cos, sin, position_ids, unsqueeze_dim=1, group_size_1=2, group_size_2=512):
+
+def apply_group_rotary_pos_emb(
+    q, k, cos, sin, position_ids, unsqueeze_dim=1, group_size_1=2, group_size_2=512
+):
     """Applies Rotary Position Embedding to the query and key tensors.
 
     Args:
@@ -68,8 +69,8 @@ def apply_group_rotary_pos_emb(q, k, cos, sin, position_ids, unsqueeze_dim=1, gr
     Returns:
         `tuple(torch.Tensor)` comprising of the query and key tensors rotated using the Rotary Position Embedding.
     """
-    q_pos = position_ids//group_size_1 + group_size_2 - group_size_2//group_size_1
-    k_pos = position_ids//group_size_1 
+    q_pos = position_ids // group_size_1 + group_size_2 - group_size_2 // group_size_1
+    k_pos = position_ids // group_size_1
 
     q_cos = cos[q_pos].unsqueeze(unsqueeze_dim)
     q_sin = sin[q_pos].unsqueeze(unsqueeze_dim)
@@ -117,14 +118,19 @@ def self_extend_forward(
                 "with a layer index."
             )
         kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
-        #print(kv_seq_len)
+        # print(kv_seq_len)
     cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
-
 
     if past_key_value is not None:
         # Specific to RoPE models with partial rotation
-        cache_kwargs = {"sin": sin, "cos": cos, "partial_rotation_size": self.rotary_emb.dim}
-        key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+        cache_kwargs = {
+            "sin": sin,
+            "cos": cos,
+            "partial_rotation_size": self.rotary_emb.dim,
+        }
+        key_states, value_states = past_key_value.update(
+            key_states, value_states, self.layer_idx, cache_kwargs
+        )
     # The new Cache class does not support add one more key_states, have to do RoPE computation later.
 
     # Partial rotary embedding
@@ -138,15 +144,33 @@ def self_extend_forward(
     )
     # [batch_size, seq_length, num_heads, head_dim // config.partial_rotary_factor]
     k_pos = torch.arange(kv_seq_len, device=position_ids.device).view(bsz, kv_seq_len)
- # need to recompute 
+    # need to recompute
     q_pos = position_ids
 
     neighbor_query_rot, _ = apply_rotary_pos_emb(query_rot, None, cos, sin, q_pos)
     _, neighbor_key_rot = apply_rotary_pos_emb(None, key_rot, cos, sin, k_pos)
 
-    _re_group_size_2 = 0 if position_ids.max() < group_size_2 else group_size_2 # in case that, the smallest q position, g2-g2//g1 exceed the max position
-    group_query_rot, _ = apply_group_rotary_pos_emb(query_rot, None, cos, sin, q_pos, group_size_1=group_size_1, group_size_2=_re_group_size_2)
-    _, group_key_rot = apply_group_rotary_pos_emb(None, key_rot, cos, sin, k_pos, group_size_1=group_size_1, group_size_2=_re_group_size_2)
+    _re_group_size_2 = (
+        0 if position_ids.max() < group_size_2 else group_size_2
+    )  # in case that, the smallest q position, g2-g2//g1 exceed the max position
+    group_query_rot, _ = apply_group_rotary_pos_emb(
+        query_rot,
+        None,
+        cos,
+        sin,
+        q_pos,
+        group_size_1=group_size_1,
+        group_size_2=_re_group_size_2,
+    )
+    _, group_key_rot = apply_group_rotary_pos_emb(
+        None,
+        key_rot,
+        cos,
+        sin,
+        k_pos,
+        group_size_1=group_size_1,
+        group_size_2=_re_group_size_2,
+    )
 
     # [batch_size, seq_length, num_heads, head_dim]
     neighbor_query_states = torch.cat((neighbor_query_rot, query_pass), dim=-1)
@@ -155,10 +179,12 @@ def self_extend_forward(
     group_query_states = torch.cat((group_query_rot, query_pass), dim=-1)
     group_key_states = torch.cat((group_key_rot, key_pass), dim=-1)
 
-
-    neighbor_attn_weights = torch.matmul(neighbor_query_states, neighbor_key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
-    group_attn_weights = torch.matmul(group_query_states, group_key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
-
+    neighbor_attn_weights = torch.matmul(
+        neighbor_query_states, neighbor_key_states.transpose(2, 3)
+    ) / math.sqrt(self.head_dim)
+    group_attn_weights = torch.matmul(
+        group_query_states, group_key_states.transpose(2, 3)
+    ) / math.sqrt(self.head_dim)
 
     if neighbor_attn_weights.size() != (bsz, self.num_heads, q_len, kv_seq_len):
         raise ValueError(
@@ -173,23 +199,38 @@ def self_extend_forward(
             )
         neighbor_attn_weights = neighbor_attn_weights + attention_mask
         group_attn_weights = group_attn_weights + attention_mask
-     
+
     if q_len == 1:
-        neighbor_attention_mask = torch.zeros((q_len, kv_seq_len), device=neighbor_attn_weights.device)
+        neighbor_attention_mask = torch.zeros(
+            (q_len, kv_seq_len), device=neighbor_attn_weights.device
+        )
         neighbor_attention_mask[:, -group_size_2:] = 1
     elif q_len == kv_seq_len:
-        neighbor_attention_mask = torch.ones((q_len, kv_seq_len), device=neighbor_attn_weights.device)
+        neighbor_attention_mask = torch.ones(
+            (q_len, kv_seq_len), device=neighbor_attn_weights.device
+        )
         neighbor_attention_mask = torch.tril(neighbor_attention_mask)
         if q_len > group_size_2:
-            # seq length is larger than group_size_2, should do replacement. 
-            group_attention_mask =  torch.tril(torch.ones((q_len-group_size_2, kv_seq_len-group_size_2), device=group_attn_weights.device))
-            neighbor_attention_mask[group_size_2:, :-group_size_2] -= group_attention_mask
+            # seq length is larger than group_size_2, should do replacement.
+            group_attention_mask = torch.tril(
+                torch.ones(
+                    (q_len - group_size_2, kv_seq_len - group_size_2),
+                    device=group_attn_weights.device,
+                )
+            )
+            neighbor_attention_mask[
+                group_size_2:, :-group_size_2
+            ] -= group_attention_mask
     else:
         raise ValueError("q_len should be 1 or seq_len.")
-    
-    merged_attn_weights = torch.where(neighbor_attention_mask.bool(), neighbor_attn_weights, group_attn_weights) # replace the group attention with neighbor attention within the neighbor window. 
+
+    merged_attn_weights = torch.where(
+        neighbor_attention_mask.bool(), neighbor_attn_weights, group_attn_weights
+    )  # replace the group attention with neighbor attention within the neighbor window.
     # upcast attention to fp32
-    attn_weights = nn.functional.softmax(merged_attn_weights, dtype=torch.float32, dim=-1).to(query_states.dtype)
+    attn_weights = nn.functional.softmax(
+        merged_attn_weights, dtype=torch.float32, dim=-1
+    ).to(query_states.dtype)
     attn_weights = self.attention_dropout(attn_weights)
 
     attn_output = torch.matmul(attn_weights, value_states)
@@ -209,4 +250,3 @@ def self_extend_forward(
         attn_weights = None
 
     return attn_output, attn_weights, past_key_value
-

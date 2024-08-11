@@ -192,9 +192,9 @@ def self_extend_forward(
                     device=group_attn_weights.device,
                 )
             )
-            neighbor_attention_mask[group_size_2:, :-group_size_2] -= (
-                group_attention_mask
-            )
+            neighbor_attention_mask[
+                group_size_2:, :-group_size_2
+            ] -= group_attention_mask
     else:
         raise ValueError("q_len should be 1 or seq_len.")
 

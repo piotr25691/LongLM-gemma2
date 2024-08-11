@@ -16,11 +16,11 @@ self_extend_forward = partial(
     GemmaSE.self_extend_forward, group_size_1=16, group_size_2=2048
 )
 
-device = "cpu"
-model_path = "google/gemma-2-2b-it"
+device = "cpu"  # or "cuda" if you use a GPU, "mps" for Apple Silicon
+model_path = "google/gemma-2-2b-it"  # gated model, need hf token
 model = AutoModelForCausalLM.from_pretrained(
-  model_path,
-  torch_dtype=torch.bfloat16,
+    model_path,
+    torch_dtype=torch.bfloat16,  # prevent upcasting to save RAM
 ).to(device)
 tokenizer = AutoTokenizer.from_pretrained(model_path)
 model.eval()
